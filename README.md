@@ -313,8 +313,141 @@ google_dashboard/
 | `projects` | Search Console 사이트 | `id`(PK), `user_id`(FK), `site_url`, `permission_level` |
 | `analytics_cache` | Search Analytics 캐시 (TTL 6h) | `id`(PK), `project_id`(FK), `query_hash`, `data_json` |
 | `sitemaps_cache` | Sitemaps 캐시 (TTL 24h) | `id`(PK), `project_id`(FK), `data_json` |
+| `oauth_states` | OAuth CSRF state (단기 저장) | `state`(PK), `created_at` |
 
 > FK 관계: `users` → `sessions`, `users` → `projects` → `analytics_cache` / `sitemaps_cache` (ON DELETE CASCADE)
+
+### DDL (MariaDB)
+
+`app/db/database.py`의 `_create_tables_mysql_inner()`가 앱 시작 시 실행하는 스키마입니다.
+모든 시각 컬럼은 unix timestamp(`DOUBLE`)로 저장합니다.
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    user_id     VARCHAR(255) PRIMARY KEY,
+    email       VARCHAR(255) NOT NULL,
+    created_at  DOUBLE NOT NULL DEFAULT (UNIX_TIMESTAMP())
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS projects (
+    id          INT PRIMARY KEY AUTO_INCREMENT,
+    user_id     VARCHAR(255) NOT NULL,
+    site_url    TEXT NOT NULL,
+    permission_level VARCHAR(50) NOT NULL DEFAULT 'siteOwner',
+    created_at  DOUBLE NOT NULL DEFAULT (UNIX_TIMESTAMP()),
+    UNIQUE KEY uq_user_site (user_id, site_url(255)),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS analytics_cache (
+    id          INT PRIMARY KEY AUTO_INCREMENT,
+    project_id  INT NOT NULL,
+    query_hash  VARCHAR(64) NOT NULL,
+    data_json   LONGTEXT NOT NULL,
+    fetched_at  DOUBLE NOT NULL DEFAULT (UNIX_TIMESTAMP()),
+    expires_at  DOUBLE NOT NULL,
+    UNIQUE KEY uq_project_hash (project_id, query_hash),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS sitemaps_cache (
+    id          INT PRIMARY KEY AUTO_INCREMENT,
+    project_id  INT NOT NULL,
+    data_json   LONGTEXT NOT NULL,
+    fetched_at  DOUBLE NOT NULL DEFAULT (UNIX_TIMESTAMP()),
+    expires_at  DOUBLE NOT NULL,
+    UNIQUE KEY (project_id),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id  VARCHAR(64) PRIMARY KEY,
+    user_id     VARCHAR(255) NOT NULL,
+    email       VARCHAR(255) NOT NULL DEFAULT '',
+    scopes      TEXT NOT NULL DEFAULT '[]',
+    access_token_ciphertext  TEXT NOT NULL DEFAULT '',
+    refresh_token_ciphertext TEXT NOT NULL DEFAULT '',
+    access_token_expires_at  DOUBLE NOT NULL DEFAULT 0.0,
+    created_at  DOUBLE NOT NULL DEFAULT (UNIX_TIMESTAMP()),
+    updated_at  DOUBLE NOT NULL DEFAULT (UNIX_TIMESTAMP()),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state       VARCHAR(64) PRIMARY KEY,
+    created_at  DOUBLE NOT NULL DEFAULT (UNIX_TIMESTAMP())
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- MariaDB는 CREATE INDEX IF NOT EXISTS를 지원하지 않으므로,
+-- 이미 존재하는 경우(duplicate key) 오류를 무시하고 실행한다.
+CREATE INDEX idx_projects_user ON projects(user_id);
+CREATE INDEX idx_analytics_cache_project ON analytics_cache(project_id);
+CREATE INDEX idx_sitemaps_cache_project ON sitemaps_cache(project_id);
+CREATE INDEX idx_sessions_user ON sessions(user_id);
+```
+
+### DDL (SQLite, 로컬 개발/테스트)
+
+`use_sqlite = true`일 때 `_create_tables_sqlite()`가 실행하는 스키마입니다.
+MariaDB와 논리적으로 동일하며, 타입과 자동 증가 문법만 다릅니다.
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    user_id     TEXT PRIMARY KEY,
+    email       TEXT NOT NULL,
+    created_at  REAL NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    site_url    TEXT NOT NULL,
+    permission_level TEXT NOT NULL DEFAULT 'siteOwner',
+    created_at  REAL NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(user_id, site_url)
+);
+
+CREATE TABLE IF NOT EXISTS analytics_cache (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    query_hash  TEXT NOT NULL,
+    data_json   TEXT NOT NULL,
+    fetched_at  REAL NOT NULL DEFAULT (unixepoch()),
+    expires_at  REAL NOT NULL,
+    UNIQUE(project_id, query_hash)
+);
+
+CREATE TABLE IF NOT EXISTS sitemaps_cache (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    data_json   TEXT NOT NULL,
+    fetched_at  REAL NOT NULL DEFAULT (unixepoch()),
+    expires_at  REAL NOT NULL,
+    UNIQUE(project_id)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id  TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    email       TEXT NOT NULL DEFAULT '',
+    scopes      TEXT NOT NULL DEFAULT '[]',
+    access_token_ciphertext  TEXT NOT NULL DEFAULT '',
+    refresh_token_ciphertext TEXT NOT NULL DEFAULT '',
+    access_token_expires_at  REAL NOT NULL DEFAULT 0.0,
+    created_at  REAL NOT NULL DEFAULT (unixepoch()),
+    updated_at  REAL NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state       TEXT PRIMARY KEY,
+    created_at  REAL NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_cache_project ON analytics_cache(project_id);
+CREATE INDEX IF NOT EXISTS idx_sitemaps_cache_project ON sitemaps_cache(project_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+```
 
 ---
 
